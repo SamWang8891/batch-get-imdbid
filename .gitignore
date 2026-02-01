@@ -1,2 +1,12 @@
+# Python dev
 __pycache__
 .venv
+
+# IDEs
+.vscode/
+*.iml
+
+# AIs
+.idea/
+
+
