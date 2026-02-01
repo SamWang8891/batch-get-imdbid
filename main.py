@@ -1,29 +1,67 @@
-import itertools
 import os
+import platform
 import random
 import re
-import shutil
-import signal
-import sys
+import subprocess
 import threading
-import time
-from enum import IntEnum
+import tkinter as tk
+from tkinter import ttk
+import webbrowser
 from typing import Optional
 
 import requests
 from bs4 import BeautifulSoup
-from simple_term_menu import TerminalMenu
 
-from lang import language_codes
+# Resolve sound file paths — sounds/ folder next to main.py
+_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+COPY_SOUND = os.path.join(_BASE_DIR, "sounds", "copy_sound.mp3")
+DONE_SOUND = os.path.join(_BASE_DIR, "sounds", "done_sound.mp3")
 
-stop_spinner = False
+
+def play_sound(sound_path: str = COPY_SOUND):
+    """Play a sound in a background thread (cross-platform)."""
+    def _play():
+        try:
+            system = platform.system()
+            if system == "Darwin":
+                subprocess.Popen(
+                    ["afplay", sound_path],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                )
+            elif system == "Windows":
+                subprocess.Popen(
+                    [
+                        "powershell", "-c",
+                        f'(New-Object Media.SoundPlayer "{sound_path}").PlaySync()',
+                    ],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                )
+            else:
+                for player in ["mpv", "ffplay", "aplay", "paplay"]:
+                    try:
+                        args = [player]
+                        if player == "mpv":
+                            args += ["--no-terminal", "--no-video"]
+                        elif player == "ffplay":
+                            args += ["-nodisp", "-autoexit"]
+                        args.append(sound_path)
+                        subprocess.Popen(
+                            args,
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                        )
+                        break
+                    except FileNotFoundError:
+                        continue
+        except Exception:
+            pass
+
+    threading.Thread(target=_play, daemon=True).start()
+
 
 USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0.3 Safari/605.1.15",
-    "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:89.0) Gecko/20100101 Firefox/89.0",
-    "Mozilla/5.0 (iPhone; CPU iPhone OS 14_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Mobile/15E148 Safari/604.1",
-    "Mozilla/5.0 (Linux; Android 10; SM-G973F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/89.0.4389.105 Mobile Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.6 Safari/605.1.15",
+    "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:133.0) Gecko/20100101 Firefox/133.0",
 ]
 
 HEADERS = {
@@ -31,418 +69,497 @@ HEADERS = {
 }
 
 
-class NumberType(IntEnum):
-    QUIT = -1,
-    CONTINUE = -2,
-
-
-def signal_handler(sig, frame):
-    global stop_spinner
-    stop_spinner = True
-    print("\033[H\033[J", end="")  # Clear the screen
-    print("The program left you behind and continue watching Shikanoko while it's antlers are growing back...\n")
-    sys.exit(0)
-
-
-def spinner(delay=0.1):
-    spinner_symbols = itertools.cycle(["|", "/", "-", "\\"])  # ["◐", "◓", "◑", "◒"]
-    while not stop_spinner:
-        sys.stdout.write(f"\rLoading... {next(spinner_symbols)}")
-        sys.stdout.flush()
-        time.sleep(delay)
-
-
-def select_language():
-    menu = TerminalMenu(language_codes, title="Select the preferred language", show_search_hint=True,
-                        show_search_hint_text="(Press \"/\" to search) (Better select the ones with country code.)")
-    menu_entry_index = menu.show()
-    selected: str = re.sub(r'\s+', ', ', language_codes[menu_entry_index], count=1)
-    print(f"You selected \"{selected}\"!")
-    time.sleep(1)
-
-    if language_codes[menu_entry_index] != 'default':
-        preferred_result_disp_language = language_codes[menu_entry_index].split(' ')[0]
-        HEADERS['Accept-Language'] = f"{preferred_result_disp_language},en-US;q=0.9"
-
-
 def fetch_page(url: str) -> BeautifulSoup:
-    global stop_spinner
-    for _ in range(3):  # Retry logic
-        stop_spinner = False
-        spinner_thread = threading.Thread(target=spinner)  # Start spinner
-        spinner_thread.start()
-
+    for _ in range(3):
         try:
             response = requests.get(url, headers=HEADERS, timeout=10)
-            stop_spinner = True  # Stop spinning
-            spinner_thread.join()
-            sys.stdout.write("\rLoading... Done!\n")  # Clear the spinner and display "done"
-            sys.stdout.flush()
-
             if response.status_code == 200:
-                return BeautifulSoup(response.content, 'html.parser')
-
-            print(f"Retrying... Status Code: {response.status_code}")
-        except Exception as e:
-            stop_spinner = True  # Ensure the spinner has stopped
-            spinner_thread.join()
-            print(f"\rError: {e}")
-
+                return BeautifulSoup(response.content, "html.parser")
+        except Exception:
+            pass
     raise Exception(f"Failed to fetch {url} after 3 attempts")
 
 
 def get_episode_tt(url: str) -> dict[int, str]:
     start: int = 1
-
     soup = fetch_page(url)
-    articles = soup.select('article.sc-663ab24a-1.fzyEyw.episode-item-wrapper')
-    links = [link.get('href', '') for article in articles for link in
-             article.find_all('a', class_='ipc-title-link-wrapper')]
 
-    links = filter(lambda href: re.search(r'(tt\d+)\D', href), links)
-    tt_list = [re.search(r'(tt\d+)\D', href).group(1) for href in links]
+    articles = soup.select("article.episode-item-wrapper")
+    links = [
+        link.get("href", "")
+        for article in articles
+        for link in article.find_all("a", class_="ipc-title-link-wrapper")
+    ]
 
-    if soup.find('div', class_='ipc-title__text', string=lambda text: text and 'E0' in text):
+    links = filter(lambda href: re.search(r"(tt\d+)\D", href), links)
+    tt_list = [re.search(r"(tt\d+)\D", href).group(1) for href in links]
+
+    if soup.find(
+            "div", class_="ipc-title__text", string=lambda text: text and "E0" in text
+    ):
         start = 0
 
-    return {idx: tt_id for idx, tt_id in enumerate(tt_list, start=start)},
+    return {idx: tt_id for idx, tt_id in enumerate(tt_list, start=start)}
 
 
 def find_season_amount(url: str) -> int:
     for _ in range(3):
         soup = fetch_page(url)
         tablist = soup.select('ul[role="tablist"]')
-        if len(tablist) == 2:
-
-            links_without_unknown = [a for a in tablist[1].find_all('a') if a.text.isdigit()] if tablist[1] else []
-            links_all = [a for a in tablist[1].find_all('a')] if tablist[1] else []
-            time.sleep(2)
-            if links_all != links_without_unknown:
-                print("Unknown season ignored...")
+        if len(tablist) >= 2:
+            links_without_unknown = (
+                [a for a in tablist[1].find_all("a") if a.text.isdigit()]
+                if tablist[1]
+                else []
+            )
             return len(links_without_unknown)
-
-    raise Exception(f"Failed to season amount in find_season_amount() after 3 attempts")
+    raise Exception("Failed to find season amount after 3 attempts")
 
 
 def extract_id(str_contain_id: str) -> str:
-    """
-    Extracts the IMDb ID from the URL
-    If not in the root page, extract the root tt id from the root webpage.
-    :param str_contain_id: The IMDb URL
-    :return: the IMDb ID
-    """
-    tt_id = re.search(r'tt\d+', str_contain_id).group(0)
+    match = re.search(r"tt\d+", str_contain_id)
+    if not match:
+        return ""
+    tt_id = match.group(0)
 
-    # Verify if the URL is the root page by searching for "Episodes" in the h3
     soup = fetch_page("https://imdb.com/title/" + tt_id)
-    h3_tags = soup.find_all('h3')
+    h3_tags = soup.find_all("h3")
 
     for tag in h3_tags:
-        if 'Episodes' in tag.text:
-            return re.search(r'tt\d+', tt_id).group(0)
-        else:  # Get the root tt id if not in root page
-            root_page_dir = soup.find('a', {'aria-label': 'View all episodes'}).get('href', '')
-            return re.search(r'tt\d+', root_page_dir).group(0)
-
-    match = re.search(r'tt\d+', str_contain_id)
-    return match.group(0) if match else ''
-
-
-def search_imdb(url: str) -> dict[str, str]:
-    soup = fetch_page(url)  # may cost lots of time
-    links = soup.select('a.ipc-metadata-list-summary-item__t')
-    return {link.text.strip(): link['href'] for link in links}
-
-
-def user_search(search: str) -> Optional[str]:
-    if search.startswith(('https://www.imdb.com/title/tt', 'https://imdb.com/title/tt')):
-        if is_webpage_valid(search):
-            return extract_id(search)
+        if "Episodes" in tag.text:
+            return tt_id
         else:
-            print("Invalid IMDb URL. Please try again.")
-            time.sleep(1)
-            return None
+            a_tag = soup.find("a", {"aria-label": "View all episodes"})
+            if a_tag:
+                root_match = re.search(r"tt\d+", a_tag.get("href", ""))
+                if root_match:
+                    return root_match.group(0)
 
-    if search.startswith('https://'):
-        print("Please enter a valid IMDb title URL.")
-        time.sleep(1)
-        return None
+    return tt_id
 
-    if search.startswith('tt'):
-        if is_webpage_valid('https://imdb.com/title/' + search):
-            return search
+
+class IMDbLookupApp:
+    def __init__(self, root: tk.Tk):
+        self.root = root
+        self.root.title("IMDb ID Lookup")
+        self.root.geometry("750x600")
+        self.root.minsize(550, 400)
+
+        # Store episode data — keyed by season
+        self.episodes_by_season: dict[int, list[dict]] = {}
+        self.episode_rows: list[dict] = []  # flat list currently displayed
+        self.season_amount: int = 0
+
+        # Auto-copy state
+        self.auto_copy_active = False
+        self.auto_copy_index = 0
+        self.auto_copy_after_id: Optional[str] = None
+        self.auto_copy_season_rows: list[dict] = []
+
+        self._build_ui()
+
+    def _build_ui(self):
+        # --- Search frame ---
+        search_frame = ttk.LabelFrame(self.root, text="Search", padding=10)
+        search_frame.pack(fill=tk.X, padx=10, pady=(10, 5))
+
+        top_label_row = ttk.Frame(search_frame)
+        top_label_row.pack(fill=tk.X)
+
+        ttk.Label(top_label_row, text="Paste an IMDb URL or tt ID:").pack(
+            side=tk.LEFT, anchor=tk.W
+        )
+
+        self.imdb_btn = ttk.Button(
+            top_label_row,
+            text="🌐 Open IMDb",
+            command=lambda: webbrowser.open("https://www.imdb.com"),
+        )
+        self.imdb_btn.pack(side=tk.RIGHT)
+
+        input_row = ttk.Frame(search_frame)
+        input_row.pack(fill=tk.X, pady=(5, 0))
+
+        self.search_var = tk.StringVar()
+        self.search_entry = ttk.Entry(input_row, textvariable=self.search_var)
+        self.search_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
+        self.search_entry.bind("<Return>", lambda e: self._on_search())
+
+        self.search_btn = ttk.Button(input_row, text="Fetch", command=self._on_search)
+        self.search_btn.pack(side=tk.RIGHT)
+
+        # --- Status ---
+        self.status_var = tk.StringVar(value="Ready. Open IMDb, find your title, paste the URL here.")
+        ttk.Label(self.root, textvariable=self.status_var, foreground="gray").pack(
+            anchor=tk.W, padx=10, pady=(2, 2)
+        )
+
+        # --- Episode list frame (scrollable) ---
+        output_frame = ttk.LabelFrame(self.root, text="Episode IDs", padding=5)
+        output_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=(5, 5))
+
+        self.canvas = tk.Canvas(output_frame, highlightthickness=0)
+        self.scrollbar = ttk.Scrollbar(
+            output_frame, orient=tk.VERTICAL, command=self.canvas.yview
+        )
+        self.canvas.configure(yscrollcommand=self.scrollbar.set)
+
+        self.scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        self.inner_frame = ttk.Frame(self.canvas)
+        self.canvas_window = self.canvas.create_window(
+            (0, 0), window=self.inner_frame, anchor=tk.NW
+        )
+
+        self.inner_frame.bind("<Configure>", self._on_inner_configure)
+        self.canvas.bind("<Configure>", self._on_canvas_configure)
+
+        self.canvas.bind_all(
+            "<MouseWheel>",
+            lambda e: self.canvas.yview_scroll(-1 * (e.delta // 120), "units"),
+        )
+        self.canvas.bind_all(
+            "<Button-4>", lambda e: self.canvas.yview_scroll(-1, "units")
+        )
+        self.canvas.bind_all(
+            "<Button-5>", lambda e: self.canvas.yview_scroll(1, "units")
+        )
+
+        # --- Auto-copy frame ---
+        auto_frame = ttk.LabelFrame(self.root, text="Auto Copy (sequential)", padding=5)
+        auto_frame.pack(fill=tk.X, padx=10, pady=(0, 5))
+
+        auto_row1 = ttk.Frame(auto_frame)
+        auto_row1.pack(fill=tk.X)
+
+        ttk.Label(auto_row1, text="Season:").pack(side=tk.LEFT)
+        self.season_var = tk.StringVar(value="1")
+        self.season_spinbox = ttk.Spinbox(
+            auto_row1, from_=1, to=1, increment=1,
+            textvariable=self.season_var, width=4, state=tk.DISABLED
+        )
+        self.season_spinbox.pack(side=tk.LEFT, padx=(5, 10))
+
+        ttk.Label(auto_row1, text="Interval (sec):").pack(side=tk.LEFT)
+        self.interval_var = tk.StringVar(value="2")
+        self.interval_entry = ttk.Spinbox(
+            auto_row1, from_=0.5, to=30, increment=0.5,
+            textvariable=self.interval_var, width=5
+        )
+        self.interval_entry.pack(side=tk.LEFT, padx=(5, 10))
+
+        self.reverse_var = tk.BooleanVar(value=False)
+        self.reverse_check = ttk.Checkbutton(
+            auto_row1, text="◀ Reverse", variable=self.reverse_var
+        )
+        self.reverse_check.pack(side=tk.LEFT, padx=(0, 10))
+
+        self.sound_enabled = tk.BooleanVar(value=False)
+        self.sound_check = ttk.Checkbutton(
+            auto_row1, text="🔊 Sound", variable=self.sound_enabled
+        )
+        self.sound_check.pack(side=tk.LEFT, padx=(0, 10))
+
+        auto_row2 = ttk.Frame(auto_frame)
+        auto_row2.pack(fill=tk.X, pady=(4, 0))
+
+        self.auto_copy_btn = ttk.Button(
+            auto_row2, text="▶ Start Auto Copy", command=self._toggle_auto_copy, state=tk.DISABLED
+        )
+        self.auto_copy_btn.pack(side=tk.LEFT, padx=(0, 10))
+
+        self.auto_copy_status = tk.StringVar(value="")
+        ttk.Label(auto_row2, textvariable=self.auto_copy_status, foreground="yellow").pack(
+            side=tk.LEFT
+        )
+
+        # --- Bottom buttons ---
+        btn_frame = ttk.Frame(self.root)
+        btn_frame.pack(fill=tk.X, padx=10, pady=(0, 10))
+
+        self.copy_all_btn = ttk.Button(
+            btn_frame, text="📋 Copy All", command=self._copy_all, state=tk.DISABLED
+        )
+        self.copy_all_btn.pack(side=tk.RIGHT)
+
+    def _on_inner_configure(self, event):
+        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+
+    def _on_canvas_configure(self, event):
+        self.canvas.itemconfig(self.canvas_window, width=event.width)
+
+    def _set_status(self, msg: str):
+        self.status_var.set(msg)
+        self.root.update_idletasks()
+
+    def _set_busy(self, busy: bool):
+        state = tk.DISABLED if busy else tk.NORMAL
+        self.search_btn.configure(state=state)
+        self.search_entry.configure(state=state)
+
+    def _on_search(self):
+        query = self.search_var.get().strip()
+        if not query:
+            return
+
+        if self.auto_copy_active:
+            self._stop_auto_copy()
+
+        tt_match = re.search(r"tt\d+", query)
+        if not tt_match:
+            self._set_status("Could not find a tt ID in your input. Paste an IMDb URL or tt ID.")
+            return
+
+        root_id = tt_match.group(0)
+        self._set_busy(True)
+        self._set_status(f"Fetching {root_id}...")
+        threading.Thread(
+            target=self._fetch_and_display, args=(root_id,), daemon=True
+        ).start()
+
+    def _fetch_and_display(self, root_id: str):
+        try:
+            self.root.after(0, self._set_status, f"Resolving {root_id}...")
+            resolved_id = extract_id(root_id)
+            if resolved_id != root_id:
+                self.root.after(
+                    0, self._set_status, f"Resolved to series {resolved_id}..."
+                )
+                root_id = resolved_id
+
+            self.root.after(
+                0, self._set_status, f"Fetching seasons for {root_id}..."
+            )
+            season_amount = find_season_amount(
+                f"https://imdb.com/title/{root_id}/episodes/"
+            )
+
+            episodes_by_season: dict[int, list[tuple]] = {}
+            for season in range(1, season_amount + 1):
+                self.root.after(
+                    0,
+                    self._set_status,
+                    f"Fetching season {season}/{season_amount}...",
+                )
+                episode_ids = get_episode_tt(
+                    f"https://imdb.com/title/{root_id}/episodes?season={season}"
+                )
+                episodes_by_season[season] = [
+                    (ep_num, ep_tt) for ep_num, ep_tt in episode_ids.items()
+                ]
+
+            self.root.after(
+                0, self._display_episodes, root_id, episodes_by_season, season_amount
+            )
+
+        except Exception as e:
+            self.root.after(0, self._set_status, f"Error: {e}")
+            self.root.after(0, self._set_busy, False)
+
+    def _display_episodes(
+            self, root_id: str, episodes_by_season: dict[int, list[tuple]], season_amount: int
+    ):
+        for widget in self.inner_frame.winfo_children():
+            widget.destroy()
+
+        self.episodes_by_season = {}
+        self.episode_rows = []
+        self.season_amount = season_amount
+
+        # --- Root title ID row ---
+        root_row = ttk.Frame(self.inner_frame)
+        root_row.pack(fill=tk.X, padx=5, pady=(5, 8))
+
+        root_text = f"[imdbid-{root_id}]"
+        root_label = ttk.Label(
+            root_row, text=f"Title: {root_text}", font=("Consolas", 12, "bold"), anchor=tk.W
+        )
+        root_label.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        root_copy_btn = ttk.Button(
+            root_row,
+            text="📋",
+            width=3,
+            command=lambda: self._copy_single(root_text),
+        )
+        root_copy_btn.pack(side=tk.RIGHT, padx=(5, 0))
+
+        ttk.Separator(self.inner_frame, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=5, pady=(0, 5))
+
+        total_episodes = 0
+        for season, eps in episodes_by_season.items():
+            season_rows = []
+
+            if season_amount > 1:
+                header = ttk.Label(
+                    self.inner_frame,
+                    text=f"── Season {season} ──",
+                    font=("Consolas", 11, "bold"),
+                )
+                header.pack(fill=tk.X, padx=5, pady=(8, 2))
+
+            for ep_num, ep_tt in eps:
+                ep_text = f"{str(ep_num).zfill(2)} [imdbid-{ep_tt}]"
+                row_data = {"ep_num": ep_num, "ep_tt": ep_tt, "text": ep_text, "season": season}
+                season_rows.append(row_data)
+                self.episode_rows.append(row_data)
+
+                row = ttk.Frame(self.inner_frame)
+                row.pack(fill=tk.X, padx=5, pady=1)
+
+                label = ttk.Label(
+                    row, text=ep_text, font=("Consolas", 11), anchor=tk.W
+                )
+                label.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+                copy_btn = ttk.Button(
+                    row,
+                    text="📋",
+                    width=3,
+                    command=lambda t=ep_text: self._copy_single(t),
+                )
+                copy_btn.pack(side=tk.RIGHT, padx=(5, 0))
+
+            self.episodes_by_season[season] = season_rows
+            total_episodes += len(season_rows)
+
+        # Update season spinbox
+        self.season_var.set("1")
+        self.season_spinbox.configure(from_=1, to=max(1, season_amount))
+        if season_amount > 1:
+            self.season_spinbox.configure(state=tk.NORMAL)
         else:
-            print("Invalid IMDb ID. Please try again.")
-            time.sleep(1)
-            return None
+            self.season_spinbox.configure(state=tk.DISABLED)
 
-    results = search_imdb(f"https://imdb.com/find/?q={search}")
-    print(results.items())
-    if not results:
-        print("No results. Try again.")
-        time.sleep(1)
-        return None
+        self.copy_all_btn.configure(state=tk.NORMAL)
+        self.auto_copy_btn.configure(state=tk.NORMAL)
+        self.auto_copy_status.set("")
+        self._set_status(
+            f"Done — {root_id} • {total_episodes} episodes across {season_amount} season{'s' if season_amount != 1 else ''}"
+        )
+        self._set_busy(False)
 
-    while True:
-        print("\033[H\033[J", end="")  # Clear the screen
-        print("Searched for:", search)
-        print("\nSearch Results:")  # TODO: implement the selection
-        for idx, (key, value) in enumerate(results.items(), start=1):
-            print(f"{idx}. {key} - https://imdb.com{value}")
+        self.canvas.yview_moveto(0)
 
-        chosen = input("\nEnter the number of the title or 'a' to search again: ").strip()
-        print("\n")
-        if chosen.lower() == 'a':
-            break
+    def _copy_single(self, text: str):
+        self.root.clipboard_clear()
+        self.root.clipboard_append(text)
+        self._set_status(f"Copied: {text}")
 
-        if not (chosen.isdigit() and 1 <= int(chosen) <= len(results)):
-            print("Invalid input. Try again.")
-            time.sleep(1)
-            continue
+    def _copy_all(self):
+        self.root.clipboard_clear()
+        all_text = "\n".join(row["text"] for row in self.episode_rows)
+        self.root.clipboard_append(all_text)
+        self._set_status("Copied all episode IDs to clipboard!")
+
+    # --- Auto Copy (one season at a time) ---
+
+    def _toggle_auto_copy(self):
+        if self.auto_copy_active:
+            self._stop_auto_copy()
+        else:
+            self._start_auto_copy()
+
+    def _start_auto_copy(self):
+        try:
+            selected_season = int(self.season_var.get())
+        except ValueError:
+            self._set_status("Invalid season number.")
+            return
+
+        if selected_season not in self.episodes_by_season:
+            self._set_status(f"Season {selected_season} not found.")
+            return
+
+        season_rows = self.episodes_by_season[selected_season]
+        if not season_rows:
+            self._set_status(f"Season {selected_season} has no episodes.")
+            return
+
+        # Reverse order if checkbox is checked
+        if self.reverse_var.get():
+            self.auto_copy_season_rows = list(reversed(season_rows))
+        else:
+            self.auto_copy_season_rows = list(season_rows)
+
+        self.auto_copy_active = True
+        self.auto_copy_index = 0
+        self.auto_copy_btn.configure(text="⏹ Stop")
+        self.interval_entry.configure(state=tk.DISABLED)
+        self.season_spinbox.configure(state=tk.DISABLED)
+        self.reverse_check.configure(state=tk.DISABLED)
+        self._auto_copy_next()
+
+    def _stop_auto_copy(self):
+        self.auto_copy_active = False
+        if self.auto_copy_after_id:
+            self.root.after_cancel(self.auto_copy_after_id)
+            self.auto_copy_after_id = None
+        self.auto_copy_btn.configure(text="▶ Start Auto Copy")
+        self.interval_entry.configure(state=tk.NORMAL)
+        self.reverse_check.configure(state=tk.NORMAL)
+        if self.season_amount > 1:
+            self.season_spinbox.configure(state=tk.NORMAL)
+        self.auto_copy_status.set("Stopped.")
+
+    def _auto_copy_next(self):
+        if not self.auto_copy_active:
+            return
+
+        total = len(self.auto_copy_season_rows)
+
+        if self.auto_copy_index >= total:
+            selected_season = int(self.season_var.get())
+            direction = " (reversed)" if self.reverse_var.get() else ""
+            self.auto_copy_status.set(f"✅ Done — Season {selected_season}{direction} complete!")
+            self.auto_copy_active = False
+            self.auto_copy_btn.configure(text="▶ Start Auto Copy")
+            self.interval_entry.configure(state=tk.NORMAL)
+            self.reverse_check.configure(state=tk.NORMAL)
+            if self.season_amount > 1:
+                self.season_spinbox.configure(state=tk.NORMAL)
+            if self.sound_enabled.get():
+                play_sound(DONE_SOUND)
+            return
+
+        row = self.auto_copy_season_rows[self.auto_copy_index]
+        self.root.clipboard_clear()
+        self.root.clipboard_append(row["text"])
+
+        self.auto_copy_status.set(
+            f"[{self.auto_copy_index + 1}/{total}] {row['text']}"
+        )
+        if self.sound_enabled.get():
+            play_sound(COPY_SOUND)
+        self._set_status(f"Auto-copied: {row['text']}")
+
+        # Scroll to the row in the list
+        try:
+            flat_idx = self.episode_rows.index(row)
+            self._highlight_row(flat_idx)
+        except ValueError:
+            pass
+
+        self.auto_copy_index += 1
 
         try:
-            return extract_id(list(results.values())[int(chosen) - 1])
-        except (ValueError, IndexError):
-            print("Invalid selection. Try again.")
-            time.sleep(1)
+            interval_ms = int(float(self.interval_var.get()) * 1000)
+        except ValueError:
+            interval_ms = 2000
 
+        self.auto_copy_after_id = self.root.after(interval_ms, self._auto_copy_next)
 
-def is_webpage_valid(url: str) -> bool:
-    global stop_spinner
-    stop_spinner = False
-    spinner_thread = threading.Thread(target=spinner)  # Start spinner
-    spinner_thread.start()
-
-    response = requests.get(url, headers=HEADERS)
-    stop_spinner = True  # Stop spinning
-    return response.status_code == 200
-
-
-def create_dest_directory(root_id: str) -> str:
-    dest_directory: str
-
-    while True:
-        dest_directory = clean_path(
-            input("\nEnter or drag in the destination directory: ")
-        )
-        if not os.path.exists(dest_directory):
-            print("\033[H\033[J", end="")  # Clear the screen
-            print(f"You entered {dest_directory}")
-            print("The path directory does not exist, do you want to create it?")
-            inp_agree = input("Enter 'y' to create or 'n' to enter a new path: ").strip().lower() == 'y'
-
-            if inp_agree:
-                os.makedirs(dest_directory)
-                break
-        else:
-            break
-
-    # Separate the parent directory and the folder name
-    folder_name = dest_directory.split(os.sep)[-1]
-    parent_dir = dest_directory.replace(folder_name, '')
-
-    new_dest: str
-
-    # See if the folder name contains the IMDb ID
-    if re.search(r'\[imdbid-tt\d+\]', folder_name):
-        if not re.search(rf'\[imdbid-{root_id}\]',
-                         folder_name):  # If the IMDb ID is different from the title's IMDb ID
-            while True:
-                print("\033[H\033[J", end="")  # Clear the screen
-                print("The folder name does have an IMDb ID but it's not the same as the title's IMDb ID.")
-                ans = input("\nDo you want to change (or create a new folder if the original folder has files in it) the folder name? (y/n): ").strip().lower()
-                if ans == 'y':
-                    folder_name: str = re.sub(r'\[imdbid-tt\d+\]', '', folder_name).strip()
-                    new_dest = f"{parent_dir} {folder_name} [imdbid-{root_id}]"
-                    os.rename(dest_directory, new_dest)
-                    break
-                elif ans == 'n':
-                    print(
-                        "Okay. But just to let you know, the IMDb ID is not the same as the title's IMDb ID. And it'll cause Jellyfin to recognize the wrong title.")
-                    break
-                else:
-                    print("Invalid input.")
-                    time.sleep(1)
-    else:  # If the folder name does not contain any IMDb ID
-        new_dest = f"{dest_directory} [imdbid-{root_id}]"
-        os.rename(dest_directory, new_dest)
-
-    for s in range(1, season_amount + 1):
-        os.makedirs(os.path.join(dest_directory, f'Season {s}'), exist_ok=True)
-
-    return dest_directory
-
-
-def copy_and_rename_files(dest_directory: str, season_amount: int):
-    while True:
-        print("\033[H\033[J", end="")  # Clear the screen
-        file_amount = input("Enter number of files per episode (default 1): ").strip() or "1"
-        if file_amount.isdigit():
-            file_amount = int(file_amount)
-            break
-        else:
-            print("Invalid input.")
-            time.sleep(1)
-
-
-    start:int = 1 # Default start
-    if season_amount > 1:
-        while True:
-            assign: int = ask_to_assign_number("season", season_amount)
-            if assign == NumberType.QUIT:
-                return
-
-            if assign == NumberType.CONTINUE:
-                break
-
-            if assign > 0 and assign <= season_amount:
-                start = assign
-                break
-
-            print("\nInvalid input.")
-            print("assign:", assign)
-            time.sleep(1)
-
-    print()
-
-    for i in range(start, season_amount + 1): # season loop
-
-        id_dict: dict[int, str] = get_episode_tt(f"https://imdb.com/title/{root_id}/episodes?season={i}")
-
-        is_reset: bool = False
-        # TODO: Fixed the start in id_dict and now it goes wrong here
-        for ep_index, ep_tt in id_dict.items(): # episode loop
-            if is_reset:
-                break
-
-            for file_index in range(1, file_amount + 1): # file loop
-                if is_reset:
-                    break
-
-                while True:
-                    print("\033[H\033[J", end="")  # Clear the screen
-                    print("Enter or drag in the directory of the file. \n('s' to skip, 'r' to reset naming process)")
-                    print(
-                        f"\nSeason {i}/{season_amount}, file {file_index}/{file_amount} for episode {ep_index}/{len(id_dict)}.")
-                    file_path = clean_path(
-                        input("Enter the file path: ").strip()
-                    )
-
-                    if file_path == "s":
-                        break
-
-                    if file_path == "r":
-                        print("\033[H\033[J", end="")  # Clear the screen
-                        print("Resetting naming process...")
-                        time.sleep(1)
-                        is_reset = True
-                        break
-
-                    if not os.path.exists(file_path):
-                        print("\033[H\033[J", end="")  # Clear the screen
-                        if file_path == '':
-                            print("You entered nothing.")
-                        else:
-                            print(f"You entered {file_path}")
-                        print("Invalid path. Try again.")
-                        time.sleep(1)
-
-                        continue
-
-                    break
-
-                file_ext = os.path.splitext(file_path)[1]
-                new_file_path = os.path.join(
-                    dest_directory,
-                    f"Season {i}",
-                    f"{str(ep_index).zfill(2)} [imdbid-{ep_tt}]{file_ext}"
-                )
-                shutil.copy(file_path, new_file_path)
-
-
-def clean_path(path: str) -> str:
-    no_esc = path.strip().replace('\\', '')
-    if no_esc.startswith("'") and no_esc.endswith("'"):
-        no_esc = no_esc[1:-1]
-    return no_esc
-
-
-def network_test():
-    response_q8 = os.system("ping -c 1 8.8.8.8 > /dev/null 2>&1")
-    response_imdb = os.system("ping -c 1 imdb.com > /dev/null 2>&1")
-
-    if response_q8 == 0 and response_imdb == 0:
-        return True
-    elif response_q8 == 0 and response_imdb != 0:
-        print("You seemed to have network connection but can't connect to IMDb.com.")
-        raise Exception("No network connection.")
-
-
-def ask_to_assign_number(info: str, total_amount:int) -> int:
-    a = NumberType | int
-
-    while True:
-        print("\033[H\033[J", end="")  # Clear the screen
-        print(f"There are {total_amount} {info}s.")
-        print(f"Do you want to start from a particular {info}?")
-        inp_number = input(
-            f"\nEnter the {info} number to start with or press <Enter> to ignore, enter 'q' to quit the program: ").strip().lower()
-
-        if inp_number == 'q':
-            return NumberType.QUIT
-
-        if not inp_number:
-            return NumberType.CONTINUE
-
-        if not inp_number.isdigit():
-            print("Invalid input.")
-            time.sleep(1)
-            continue
-
-        return int(inp_number)
+    def _highlight_row(self, index: int):
+        """Scroll the canvas so the given episode row index is visible."""
+        if not self.episode_rows:
+            return
+        total = len(self.episode_rows)
+        fraction = max(0, (index - 2)) / total
+        self.canvas.yview_moveto(fraction)
 
 
 if __name__ == "__main__":
-    signal.signal(signal.SIGINT, signal_handler)
-
-    # TODO: Anime only warning
-
-    select_language()
-
-    while True:
-        root_id: Optional[str] = None
-
-        network_test()
-
-        while True:
-            print("\033[H\033[J", end="")  # Clear the screen
-            print("Search for the title name or enter the IMDb title URL (e.g., https://www.imdb.com/title/tt...).\n")
-            inp_search = input(
-                "Search: "
-            ).strip()
-            print("\n")
-            if not inp_search:
-                continue
-
-            if root_id := user_search(inp_search):
-                break
-
-        season_amount = find_season_amount(f"https://imdb.com/title/{root_id}/episodes/")
-
-        print("\033[H\033[J", end="")  # Clear the screen
-
-        if season_amount == 1:
-            print(f"There is {season_amount} season.")
-        else:
-            print(f"There are {season_amount} seasons.")
-
-        dest_directory = create_dest_directory(root_id)
-        copy_and_rename_files(dest_directory, season_amount)
-
-        print("\033[H\033[J", end="")  # Clear the screen
-        inp_continue = input("Do you want to go on to the next title? (y/n): ").strip().lower()
-        if inp_continue != 'y':
-            break
-
-    print("\033[H\033[J", end="")  # Clear the screen
-    print("The program left you behind and continue watching Shikanoko while it's antlers are growing back...\n")
+    root = tk.Tk()
+    app = IMDbLookupApp(root)
+    root.mainloop()
