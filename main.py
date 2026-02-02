@@ -138,12 +138,96 @@ def extract_id(str_contain_id: str) -> str:
     return tt_id
 
 
+def is_dark_mode() -> bool:
+    """Detect if the system is using a dark color scheme."""
+    system = platform.system()
+
+    if system == "Darwin":
+        try:
+            result = subprocess.run(
+                ["defaults", "read", "-g", "AppleInterfaceStyle"],
+                capture_output=True, text=True, timeout=2,
+            )
+            return result.stdout.strip().lower() == "dark"
+        except Exception:
+            return False
+
+    elif system == "Windows":
+        try:
+            import winreg
+            key = winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize",
+            )
+            value, _ = winreg.QueryValueEx(key, "AppsUseLightTheme")
+            winreg.CloseKey(key)
+            return value == 0
+        except Exception:
+            return False
+
+    else:  # Linux — check multiple sources
+        # 1. Check GTK theme name
+        for env_var in ("GTK_THEME", "GTK2_RC_FILES"):
+            val = os.environ.get(env_var, "").lower()
+            if "dark" in val:
+                return True
+
+        # 2. Check freedesktop color-scheme via dbus (KDE, GNOME 42+)
+        try:
+            result = subprocess.run(
+                [
+                    "dbus-send", "--session", "--print-reply=literal",
+                    "--dest=org.freedesktop.portal.Desktop",
+                    "/org/freedesktop/portal/desktop",
+                    "org.freedesktop.portal.Settings.Read",
+                    "string:org.freedesktop.appearance",
+                    "string:color-scheme",
+                ],
+                capture_output=True, text=True, timeout=2,
+            )
+            # color-scheme: 0=default, 1=dark, 2=light
+            if "uint32 1" in result.stdout:
+                return True
+        except Exception:
+            pass
+
+        # 3. Check gsettings (GNOME)
+        try:
+            result = subprocess.run(
+                ["gsettings", "get", "org.gnome.desktop.interface", "color-scheme"],
+                capture_output=True, text=True, timeout=2,
+            )
+            if "dark" in result.stdout.lower():
+                return True
+        except Exception:
+            pass
+
+        # 4. Fallback: sample the tkinter default background color
+        try:
+            temp = tk.Tk()
+            temp.withdraw()
+            bg = temp.cget("background")
+            temp.destroy()
+            # Parse the color — dark backgrounds have low brightness
+            r, g, b = temp.winfo_rgb(bg) if hasattr(temp, 'winfo_rgb') else (0xFFFF, 0xFFFF, 0xFFFF)
+            brightness = (r + g + b) / 3 / 256
+            return brightness < 128
+        except Exception:
+            pass
+
+        return False
+
+
 class IMDbLookupApp:
     def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title("IMDb ID Lookup")
-        self.root.geometry("750x600")
-        self.root.minsize(550, 400)
+        self.root.geometry("1500x1000")
+        self.root.minsize(700, 500)
+
+        # Detect dark/light mode for adaptive colors
+        self.dark_mode = is_dark_mode()
+        self.status_color = "yellow" if self.dark_mode else "blue"
 
         # Store episode data — keyed by season
         self.episodes_by_season: dict[int, list[dict]] = {}
@@ -157,6 +241,85 @@ class IMDbLookupApp:
         self.auto_copy_season_rows: list[dict] = []
 
         self._build_ui()
+        self._bind_shortcuts()
+
+    def _bind_shortcuts(self):
+        """Explicitly bind Cmd/Ctrl shortcuts so they work with non-English input methods on macOS."""
+        for widget in (self.root, self.search_entry):
+            widget.bind("<Command-a>", self._select_all)
+            widget.bind("<Command-A>", self._select_all)
+            widget.bind("<Command-c>", self._cmd_copy)
+            widget.bind("<Command-C>", self._cmd_copy)
+            widget.bind("<Command-v>", self._cmd_paste)
+            widget.bind("<Command-V>", self._cmd_paste)
+            widget.bind("<Command-x>", self._cmd_cut)
+            widget.bind("<Command-X>", self._cmd_cut)
+            # Also bind Control- variants for non-macOS or edge cases
+            widget.bind("<Control-a>", self._select_all)
+            widget.bind("<Control-A>", self._select_all)
+            widget.bind("<Control-c>", self._cmd_copy)
+            widget.bind("<Control-C>", self._cmd_copy)
+            widget.bind("<Control-v>", self._cmd_paste)
+            widget.bind("<Control-V>", self._cmd_paste)
+            widget.bind("<Control-x>", self._cmd_cut)
+            widget.bind("<Control-X>", self._cmd_cut)
+
+    def _select_all(self, event):
+        widget = event.widget
+        if isinstance(widget, (tk.Entry, ttk.Entry)):
+            widget.select_range(0, tk.END)
+            widget.icursor(tk.END)
+            return "break"
+        elif isinstance(widget, tk.Text):
+            widget.tag_add(tk.SEL, "1.0", tk.END)
+            return "break"
+
+    def _cmd_copy(self, event):
+        widget = event.widget
+        try:
+            if isinstance(widget, (tk.Entry, ttk.Entry)):
+                if widget.selection_present():
+                    self.root.clipboard_clear()
+                    self.root.clipboard_append(widget.selection_get())
+            elif isinstance(widget, tk.Text):
+                sel = widget.get(tk.SEL_FIRST, tk.SEL_LAST)
+                if sel:
+                    self.root.clipboard_clear()
+                    self.root.clipboard_append(sel)
+        except tk.TclError:
+            pass
+        return "break"
+
+    def _cmd_paste(self, event):
+        widget = event.widget
+        try:
+            text = self.root.clipboard_get()
+            if isinstance(widget, (tk.Entry, ttk.Entry)):
+                if widget.selection_present():
+                    widget.delete(tk.SEL_FIRST, tk.SEL_LAST)
+                widget.insert(tk.INSERT, text)
+            elif isinstance(widget, tk.Text):
+                try:
+                    widget.delete(tk.SEL_FIRST, tk.SEL_LAST)
+                except tk.TclError:
+                    pass
+                widget.insert(tk.INSERT, text)
+        except tk.TclError:
+            pass
+        return "break"
+
+    def _cmd_cut(self, event):
+        self._cmd_copy(event)
+        widget = event.widget
+        try:
+            if isinstance(widget, (tk.Entry, ttk.Entry)):
+                if widget.selection_present():
+                    widget.delete(tk.SEL_FIRST, tk.SEL_LAST)
+            elif isinstance(widget, tk.Text):
+                widget.delete(tk.SEL_FIRST, tk.SEL_LAST)
+        except tk.TclError:
+            pass
+        return "break"
 
     def _build_ui(self):
         # --- Search frame ---
@@ -194,41 +357,19 @@ class IMDbLookupApp:
             anchor=tk.W, padx=10, pady=(2, 2)
         )
 
-        # --- Episode list frame (scrollable) ---
-        output_frame = ttk.LabelFrame(self.root, text="Episode IDs", padding=5)
-        output_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=(5, 5))
+        # --- Pack bottom frames FIRST (bottom-up) so they always stay visible ---
+        # --- Bottom buttons ---
+        btn_frame = ttk.Frame(self.root)
+        btn_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=10, pady=(0, 10))
 
-        self.canvas = tk.Canvas(output_frame, highlightthickness=0)
-        self.scrollbar = ttk.Scrollbar(
-            output_frame, orient=tk.VERTICAL, command=self.canvas.yview
+        self.copy_all_btn = ttk.Button(
+            btn_frame, text="📋 Copy All", command=self._copy_all, state=tk.DISABLED
         )
-        self.canvas.configure(yscrollcommand=self.scrollbar.set)
-
-        self.scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-
-        self.inner_frame = ttk.Frame(self.canvas)
-        self.canvas_window = self.canvas.create_window(
-            (0, 0), window=self.inner_frame, anchor=tk.NW
-        )
-
-        self.inner_frame.bind("<Configure>", self._on_inner_configure)
-        self.canvas.bind("<Configure>", self._on_canvas_configure)
-
-        self.canvas.bind_all(
-            "<MouseWheel>",
-            lambda e: self.canvas.yview_scroll(-1 * (e.delta // 120), "units"),
-        )
-        self.canvas.bind_all(
-            "<Button-4>", lambda e: self.canvas.yview_scroll(-1, "units")
-        )
-        self.canvas.bind_all(
-            "<Button-5>", lambda e: self.canvas.yview_scroll(1, "units")
-        )
+        self.copy_all_btn.pack(side=tk.RIGHT)
 
         # --- Auto-copy frame ---
         auto_frame = ttk.LabelFrame(self.root, text="Auto Copy (sequential)", padding=5)
-        auto_frame.pack(fill=tk.X, padx=10, pady=(0, 5))
+        auto_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=10, pady=(0, 5))
 
         auto_row1 = ttk.Frame(auto_frame)
         auto_row1.pack(fill=tk.X)
@@ -270,18 +411,41 @@ class IMDbLookupApp:
         self.auto_copy_btn.pack(side=tk.LEFT, padx=(0, 10))
 
         self.auto_copy_status = tk.StringVar(value="")
-        ttk.Label(auto_row2, textvariable=self.auto_copy_status, foreground="yellow").pack(
+        ttk.Label(auto_row2, textvariable=self.auto_copy_status, foreground=self.status_color).pack(
             side=tk.LEFT
         )
 
-        # --- Bottom buttons ---
-        btn_frame = ttk.Frame(self.root)
-        btn_frame.pack(fill=tk.X, padx=10, pady=(0, 10))
+        # --- Episode list frame (scrollable) — packed LAST so it fills remaining space ---
+        output_frame = ttk.LabelFrame(self.root, text="Episode IDs", padding=5)
+        output_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=(5, 5))
 
-        self.copy_all_btn = ttk.Button(
-            btn_frame, text="📋 Copy All", command=self._copy_all, state=tk.DISABLED
+        self.canvas = tk.Canvas(output_frame, highlightthickness=0)
+        self.scrollbar = ttk.Scrollbar(
+            output_frame, orient=tk.VERTICAL, command=self.canvas.yview
         )
-        self.copy_all_btn.pack(side=tk.RIGHT)
+        self.canvas.configure(yscrollcommand=self.scrollbar.set)
+
+        self.scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        self.inner_frame = ttk.Frame(self.canvas)
+        self.canvas_window = self.canvas.create_window(
+            (0, 0), window=self.inner_frame, anchor=tk.NW
+        )
+
+        self.inner_frame.bind("<Configure>", self._on_inner_configure)
+        self.canvas.bind("<Configure>", self._on_canvas_configure)
+
+        self.canvas.bind_all(
+            "<MouseWheel>",
+            lambda e: self.canvas.yview_scroll(-1 * (e.delta // 120), "units"),
+        )
+        self.canvas.bind_all(
+            "<Button-4>", lambda e: self.canvas.yview_scroll(-1, "units")
+        )
+        self.canvas.bind_all(
+            "<Button-5>", lambda e: self.canvas.yview_scroll(1, "units")
+        )
 
     def _on_inner_configure(self, event):
         self.canvas.configure(scrollregion=self.canvas.bbox("all"))
