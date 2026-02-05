@@ -1,10 +1,16 @@
+<div align="center">
+
+<img src="logo/logo.svg" alt="Logo" width="100">
+
 # Batch Get IMDb ID
 
-<img src="https://img.shields.io/badge/Version-v1.0-green">
+<img src="https://img.shields.io/badge/Version-v1.1.0-green">
 
-一個桌面應用程式，用於批次取得電視劇的 IMDb 集數 ID — 非常適合用於整理媒體庫。
+A desktop application to batch fetch IMDb episode IDs from TV series — perfect for media library organization.
 
 [Link for English version](README.md)
+
+</div>
 
 ---
 
@@ -40,8 +46,7 @@
 
 ## 截圖 📸
 
-<!-- 在此加入截圖 -->
-<!-- <img src="readme-image/1.png" width="600" alt="Screenshot 1"> -->
+<img src="readme-image/1.png" width="600" alt="Screenshot 1">
 
 ---
 

@@ -1,10 +1,16 @@
+<div align="center">
+
+<img src="logo/logo.svg" alt="Logo" width="100">
+
 # Batch Get IMDb ID
 
-<img src="https://img.shields.io/badge/Version-v1.0-green">
+<img src="https://img.shields.io/badge/Version-v1.1.0-green">
 
 A desktop application to batch fetch IMDb episode IDs from TV series — perfect for media library organization.
 
 [台灣繁體中文 請按這](README.zh-TW.md)
+
+</div>
 
 ---
 
@@ -40,8 +46,7 @@ Tired of manually looking up IMDb IDs for every episode? This tool does it for y
 
 ## Screenshots 📸
 
-<!-- Add screenshots here -->
-<!-- <img src="readme-image/1.png" width="600" alt="Screenshot 1"> -->
+<img src="readme-image/1.png" width="600" alt="Screenshot 1">
 
 ---
 
