@@ -14,34 +14,123 @@ on:
         required: true
 
 jobs:
-  build:
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          brew install librsvg imagemagick
+          pip install pyinstaller requests beautifulsoup4
+
+      - name: Generate macOS icon (.icns)
+        run: |
+          mkdir -p icon.iconset
+
+          # Convert SVG to PNGs at required sizes
+          rsvg-convert -w 16 -h 16 logo/logo.svg -o icon.iconset/icon_16x16.png
+          rsvg-convert -w 32 -h 32 logo/logo.svg -o icon.iconset/icon_16x16@2x.png
+          rsvg-convert -w 32 -h 32 logo/logo.svg -o icon.iconset/icon_32x32.png
+          rsvg-convert -w 64 -h 64 logo/logo.svg -o icon.iconset/icon_32x32@2x.png
+          rsvg-convert -w 128 -h 128 logo/logo.svg -o icon.iconset/icon_128x128.png
+          rsvg-convert -w 256 -h 256 logo/logo.svg -o icon.iconset/icon_128x128@2x.png
+          rsvg-convert -w 256 -h 256 logo/logo.svg -o icon.iconset/icon_256x256.png
+          rsvg-convert -w 512 -h 512 logo/logo.svg -o icon.iconset/icon_256x256@2x.png
+          rsvg-convert -w 512 -h 512 logo/logo.svg -o icon.iconset/icon_512x512.png
+          rsvg-convert -w 1024 -h 1024 logo/logo.svg -o icon.iconset/icon_512x512@2x.png
+
+          # Create .icns
+          iconutil -c icns icon.iconset -o icon.icns
+
+      - name: Build .app bundle with PyInstaller
+        run: |
+          pyinstaller --windowed --name "IMDb-Lookup" \
+            --add-data "sounds:sounds" \
+            --icon icon.icns \
+            --target-arch universal2 \
+            main.py
+
+      - name: Create DMG
+        run: |
+          brew install create-dmg
+          create-dmg \
+            --volname "IMDb Lookup" \
+            --window-pos 200 120 \
+            --window-size 600 400 \
+            --icon-size 100 \
+            --icon "IMDb-Lookup.app" 150 185 \
+            --app-drop-link 450 185 \
+            "IMDb-Lookup-macos-universal.dmg" \
+            "dist/IMDb-Lookup.app"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: IMDb-Lookup-macos-universal
+          path: IMDb-Lookup-macos-universal.dmg
+          if-no-files-found: error
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          choco install imagemagick inkscape -y
+          pip install pyinstaller requests beautifulsoup4
+
+      - name: Generate Windows icon (.ico)
+        shell: pwsh
+        run: |
+          # Convert SVG to PNGs at various sizes using Inkscape
+          $sizes = @(16, 24, 32, 48, 64, 128, 256)
+          $pngFiles = @()
+
+          foreach ($size in $sizes) {
+            $output = "icon-$size.png"
+            inkscape --export-type=png --export-filename=$output -w $size -h $size logo/logo.svg
+            $pngFiles += $output
+          }
+
+          # Create .ico using ImageMagick
+          magick $pngFiles icon.ico
+
+      - name: Build with PyInstaller
+        run: |
+          pyinstaller --onefile --windowed --name "IMDb-Lookup" --add-data "sounds;sounds" --icon icon.ico main.py
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: IMDb-Lookup-windows-x64
+          path: dist/IMDb-Lookup.exe
+          if-no-files-found: error
+
+  build-linux:
     strategy:
       fail-fast: false
       matrix:
         include:
-          # macOS - Universal binary (x86_64 + arm64)
-          - os: macos-latest
-            artifact_name: IMDb-Lookup
-            asset_name: IMDb-Lookup-macos-universal
-            pyinstaller_args: --target-arch universal2
-
-          # Windows x64
-          - os: windows-latest
-            artifact_name: IMDb-Lookup.exe
-            asset_name: IMDb-Lookup-windows-x64
-            pyinstaller_args: ""
-
-          # Linux x64
           - os: ubuntu-22.04
-            artifact_name: IMDb-Lookup
+            arch: x86_64
             asset_name: IMDb-Lookup-linux-x64
-            pyinstaller_args: ""
-
-          # Linux ARM64
           - os: ubuntu-24.04-arm
-            artifact_name: IMDb-Lookup
+            arch: aarch64
             asset_name: IMDb-Lookup-linux-arm64
-            pyinstaller_args: ""
 
     runs-on: ${{ matrix.os }}
 
@@ -54,40 +143,86 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install Linux dependencies
-        if: runner.os == 'Linux'
+      - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y python3-tk
+          sudo apt-get install -y python3-tk libfuse2 wget librsvg2-bin
 
       - name: Install Python dependencies
         run: |
-          pip install pyinstaller
-          pip install requests beautifulsoup4
+          pip install pyinstaller requests beautifulsoup4
 
-      - name: Build with PyInstaller (Windows)
-        if: runner.os == 'Windows'
+      - name: Generate icon PNGs
         run: |
-          pyinstaller --onefile --windowed --name "IMDb-Lookup" --add-data "sounds;sounds" ${{ matrix.pyinstaller_args }} main.py
+          mkdir -p icons
+          rsvg-convert -w 256 -h 256 logo/logo.svg -o icons/icon-256.png
+          rsvg-convert -w 128 -h 128 logo/logo.svg -o icons/icon-128.png
+          rsvg-convert -w 64 -h 64 logo/logo.svg -o icons/icon-64.png
+          rsvg-convert -w 48 -h 48 logo/logo.svg -o icons/icon-48.png
+          rsvg-convert -w 32 -h 32 logo/logo.svg -o icons/icon-32.png
+          rsvg-convert -w 16 -h 16 logo/logo.svg -o icons/icon-16.png
 
-      - name: Build with PyInstaller (Unix)
-        if: runner.os != 'Windows'
+      - name: Build with PyInstaller
         run: |
-          pyinstaller --onefile --windowed --name "IMDb-Lookup" --add-data "sounds:sounds" ${{ matrix.pyinstaller_args }} main.py
+          pyinstaller --onefile --name "IMDb-Lookup" --add-data "sounds:sounds" main.py
 
-      - name: Make executable (Linux/macOS)
-        if: runner.os != 'Windows'
-        run: chmod +x dist/${{ matrix.artifact_name }}
+      - name: Create AppImage
+        run: |
+          # Download appimagetool
+          wget -q "https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-${{ matrix.arch }}.AppImage" -O appimagetool
+          chmod +x appimagetool
+
+          # Create AppDir structure
+          mkdir -p AppDir/usr/bin
+          mkdir -p AppDir/usr/share/applications
+          mkdir -p AppDir/usr/share/icons/hicolor/256x256/apps
+          mkdir -p AppDir/usr/share/icons/hicolor/128x128/apps
+          mkdir -p AppDir/usr/share/icons/hicolor/64x64/apps
+          mkdir -p AppDir/usr/share/icons/hicolor/48x48/apps
+          mkdir -p AppDir/usr/share/icons/hicolor/32x32/apps
+          mkdir -p AppDir/usr/share/icons/hicolor/16x16/apps
+
+          # Copy executable
+          cp dist/IMDb-Lookup AppDir/usr/bin/
+          chmod +x AppDir/usr/bin/IMDb-Lookup
+
+          # Copy icons
+          cp icons/icon-256.png AppDir/usr/share/icons/hicolor/256x256/apps/imdb-lookup.png
+          cp icons/icon-128.png AppDir/usr/share/icons/hicolor/128x128/apps/imdb-lookup.png
+          cp icons/icon-64.png AppDir/usr/share/icons/hicolor/64x64/apps/imdb-lookup.png
+          cp icons/icon-48.png AppDir/usr/share/icons/hicolor/48x48/apps/imdb-lookup.png
+          cp icons/icon-32.png AppDir/usr/share/icons/hicolor/32x32/apps/imdb-lookup.png
+          cp icons/icon-16.png AppDir/usr/share/icons/hicolor/16x16/apps/imdb-lookup.png
+
+          # Create desktop entry
+          cat > AppDir/imdb-lookup.desktop << 'EOF'
+          [Desktop Entry]
+          Name=IMDb Lookup
+          Exec=IMDb-Lookup
+          Icon=imdb-lookup
+          Type=Application
+          Categories=Utility;
+          EOF
+
+          # Copy desktop file to applications folder
+          cp AppDir/imdb-lookup.desktop AppDir/usr/share/applications/
+
+          # Link icon and AppRun to AppDir root
+          cp icons/icon-256.png AppDir/imdb-lookup.png
+          ln -sf usr/bin/IMDb-Lookup AppDir/AppRun
+
+          # Build AppImage
+          ARCH=${{ matrix.arch }} ./appimagetool AppDir IMDb-Lookup-${{ matrix.arch }}.AppImage
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.asset_name }}
-          path: dist/${{ matrix.artifact_name }}
+          path: IMDb-Lookup-${{ matrix.arch }}.AppImage
           if-no-files-found: error
 
   release:
-    needs: build
+    needs: [build-macos, build-windows, build-linux]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -101,15 +236,15 @@ jobs:
       - name: Prepare release files
         run: |
           mkdir -p release
-          cd artifacts
-          for dir in */; do
-            name="${dir%/}"
-            if [[ "$name" == *"windows"* ]]; then
-              zip -j "../release/${name}.zip" "$dir"*
-            else
-              tar -czvf "../release/${name}.tar.gz" -C "$dir" .
-            fi
-          done
+          # Move all files to release folder
+          find artifacts -type f \( -name "*.dmg" -o -name "*.exe" -o -name "*.AppImage" \) -exec mv {} release/ \;
+          # Zip the Windows exe
+          cd release
+          if [ -f "IMDb-Lookup.exe" ]; then
+            zip IMDb-Lookup-windows-x64.zip IMDb-Lookup.exe
+            rm IMDb-Lookup.exe
+          fi
+          ls -la
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
