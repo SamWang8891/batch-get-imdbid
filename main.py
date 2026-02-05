@@ -3,6 +3,7 @@ import platform
 import random
 import re
 import subprocess
+import sys
 import threading
 import tkinter as tk
 from tkinter import ttk
@@ -12,8 +13,11 @@ from typing import Optional
 import requests
 from bs4 import BeautifulSoup
 
-# Resolve sound file paths — sounds/ folder next to main.py
-_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# Resolve sound file paths — handles both normal and PyInstaller bundled mode
+if getattr(sys, 'frozen', False):
+    _BASE_DIR = sys._MEIPASS  # PyInstaller extracts to temp folder
+else:
+    _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 COPY_SOUND = os.path.join(_BASE_DIR, "sounds", "copy_sound.mp3")
 DONE_SOUND = os.path.join(_BASE_DIR, "sounds", "done_sound.mp3")
 
@@ -222,7 +226,6 @@ class IMDbLookupApp:
     def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title("IMDb ID Lookup")
-        self.root.geometry("1500x1000")
         self.root.minsize(700, 500)
 
         # Detect dark/light mode for adaptive colors
