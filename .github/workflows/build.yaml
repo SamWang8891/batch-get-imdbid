@@ -90,24 +90,24 @@ jobs:
 
       - name: Install dependencies
         run: |
-          choco install imagemagick inkscape -y
+          choco install imagemagick -y
           pip install pyinstaller requests beautifulsoup4
 
       - name: Generate Windows icon (.ico)
         shell: pwsh
         run: |
-          # Convert SVG to PNGs at various sizes using Inkscape
+          # Refresh PATH to include ImageMagick
+          $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+
+          # Convert SVG to PNGs at various sizes using ImageMagick
           $sizes = @(16, 24, 32, 48, 64, 128, 256)
-          $pngFiles = @()
 
           foreach ($size in $sizes) {
-            $output = "icon-$size.png"
-            inkscape --export-type=png --export-filename=$output -w $size -h $size logo/logo.svg
-            $pngFiles += $output
+            magick convert -background none -density 384 -resize "${size}x${size}" logo/logo.svg icon-$size.png
           }
 
-          # Create .ico using ImageMagick
-          magick $pngFiles icon.ico
+          # Create .ico with all sizes
+          magick icon-16.png icon-24.png icon-32.png icon-48.png icon-64.png icon-128.png icon-256.png icon.ico
 
       - name: Build with PyInstaller
         run: |
